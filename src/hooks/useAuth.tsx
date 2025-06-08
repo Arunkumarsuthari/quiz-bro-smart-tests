@@ -21,71 +21,119 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const fetchUserRole = async (userId: string) => {
+    try {
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', userId)
+        .single();
+      
+      if (error) {
+        console.error('Error fetching user role:', error);
+        return null;
+      }
+      
+      return userData?.role || null;
+    } catch (error) {
+      console.error('Error in fetchUserRole:', error);
+      return null;
+    }
+  };
+
   useEffect(() => {
     // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        console.log('Auth state changed:', event, session?.user?.id);
         setSession(session);
         setUser(session?.user ?? null);
         
         if (session?.user) {
-          // Fetch user role
+          // Fetch user role with a small delay to ensure the user record exists
           setTimeout(async () => {
-            const { data: userData } = await supabase
-              .from('users')
-              .select('role')
-              .eq('id', session.user.id)
-              .single();
-            setUserRole(userData?.role || null);
-          }, 0);
+            const role = await fetchUserRole(session.user.id);
+            console.log('Fetched role:', role);
+            setUserRole(role);
+            setLoading(false);
+          }, 100);
         } else {
           setUserRole(null);
+          setLoading(false);
         }
-        setLoading(false);
       }
     );
 
     // Check for existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
+    const initializeAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setSession(session);
+          setUser(session.user);
+          const role = await fetchUserRole(session.user.id);
+          setUserRole(role);
+        }
+      } catch (error) {
+        console.error('Error initializing auth:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
 
     return () => subscription.unsubscribe();
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    return { error };
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      return { error };
+    } catch (error) {
+      return { error };
+    }
   };
 
   const signUp = async (email: string, password: string, role: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: `${window.location.origin}/`,
-        data: { role }
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/`,
+        }
+      });
+
+      if (!error && data.user) {
+        // Insert user with specific role into users table
+        const { error: insertError } = await supabase
+          .from('users')
+          .insert({ 
+            id: data.user.id, 
+            email: data.user.email!, 
+            role: role 
+          });
+        
+        if (insertError) {
+          console.error('Error inserting user:', insertError);
+        } else {
+          console.log('User inserted with role:', role);
+        }
       }
-    });
 
-    if (!error && data.user) {
-      // Update user role in our users table
-      await supabase
-        .from('users')
-        .update({ role })
-        .eq('id', data.user.id);
+      return { error };
+    } catch (error) {
+      return { error };
     }
-
-    return { error };
   };
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    setUserRole(null);
   };
 
   return (
